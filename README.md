@@ -9,8 +9,6 @@ Code for  NTIRE 2019 Real Image Denoising Challenge
 - Numpy
 - h5py
 
-- Please download model from google drive and put it under the main path.
-[[model]](https://drive.google.com/open?id=1DRVUfMygxFhTvw4g-5eWvbeTgnN70gML)
 
 ## Training Instruction
 
