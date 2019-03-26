@@ -22,6 +22,8 @@ example usage: python train.py --prepocess False  --root /data0/lichi/denoising/
 
 python train.py    --prepocess False
 
-## Validation Instruction
+## Test Instruction
+
+#Please put 'BenchmarkNoisyBlocksSrgb.mat' under 'data/' folder.
 
 python validate.py  --name RDN_e40_16  --which_model final_net.pth  --test_path data/BenchmarkNoisyBlocksSrgb.mat
