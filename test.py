@@ -2,52 +2,34 @@ import cv2
 import os
 import argparse
 import glob
-
 from models.RDN import *
+
 from utils import *
 
+import time
+import cv2
+from PIL import Image
+
+
+import scipy.io as scio
 import torchvision.transforms as transforms
 
-from skimage.measure.simple_metrics import compare_psnr
+from functools import reduce
 
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 parser = argparse.ArgumentParser(description="DnCNN_Test")
-parser.add_argument("--num_of_layers", type=int, default=17, help="Number of total layers")
+parser.add_argument("--which_model", type=str, default='final_net.pth', help="Number of total layers")
 parser.add_argument("--logdir", type=str, default="logs/", help='path of log files')
-parser.add_argument("--test_data", type=str, default='Set12', help='test on Set12 or Set68')
-parser.add_argument("--test_noiseL", type=float, default=25, help='noise level used on test set')
-parser.add_argument("--name", type=str, default="RDN_e40_ssim", help='model name')
+parser.add_argument("--name", type=str, default="RDN_e40_16", help='model name')
+parser.add_argument("--test_path", type=str, default="data/BenchmarkNoisyBlocksSrgb.mat", help='path of val files')
 
 parser.add_argument("--add_BN", type=bool, default=True, help='Batch Normalization')
 
 
-parser.add_argument("--input_c", type=int, default=1, help="input image channel")
-parser.add_argument("--output_c", type=int, default=1, help="output image channel")
-parser.add_argument("--n_feat", type=int, default=64, help="middle features number")
-parser.add_argument("--n_resgroups", type=int, default=5, help="residule group numbers")
-parser.add_argument("--n_resblocks", type=int, default=10, help="residule attention block numbers")
-parser.add_argument("--reduction", type=int, default=16, help="channel reduction")
-parser.add_argument("--res_scale", type=int, default=1, help="res_scale")
-
 opt = parser.parse_args()
-
-n_path = 'data/noise.txt'
-gt_path = 'data/gt.txt'
-root = '/data0/lichi/denoising/sRGB/SIDD_Medium_Srgb/'
-
-with open(n_path, 'r') as f:
-    lines = f.readlines()
-    noise_list = [
-        i.strip('\n') for i in lines
-    ]
-with open(gt_path, 'r') as f:
-    lines = f.readlines()
-    gt_list = [
-        i.strip('\n') for i in lines
-    ]
 
 def normalize(data):
     return data/255.
@@ -55,74 +37,62 @@ def normalize(data):
 def main():
     # Build model
     print('Loading model ...\n')
-    #net = RCAN(opt)
-    #net = DnCNN(3, opt.num_of_layers)
-    #net = IDNet(opt)
-    #net = DnCNN_Attn(channels=1, num_of_layers=opt.num_of_layers)
-    #net = DRRN(opt)
-    #net = CASN(channels=1, num_of_layers=opt.num_of_layers)
+   
     net = RDN(64, 3)
+
     device_ids = [0]
     model = nn.DataParallel(net, device_ids=device_ids).cuda()
-    model.load_state_dict(torch.load(os.path.join(opt.logdir, opt.name, '60_net.pth')))
+    model.load_state_dict(torch.load(os.path.join(opt.logdir, opt.name, opt.which_model)))
     model.eval()
     # load data info
-    # print('Loading data info ...\n')
+    print('Loading data info ...\n')
     # files_source = glob.glob(os.path.join('data', opt.test_data, '*.png'))
     # files_source.sort()
+    mat_file = scio.loadmat(opt.test_path)
+    data = mat_file['BenchmarkNoisyBlocksSrgb']
     # process data
-    psnr_test = 0
-    cnt = 0
-    index = np.arange(0, 100, 10)
-    for f in index: #range(5):  #len(noise_list)
-        # image
-        ori = cv2.imread(os.path.join(root, noise_list[f]))
-        gt = cv2.imread(os.path.join(root, gt_list[f]))
-        Img = normalize(np.float32(ori[0:256,0:256,:]))
-        #Img = np.expand_dims(Img, 0)
+    ave_time = 0
+    cnt = 1
+    for p in range(40):
+        for q in range(32):
+            # image
+            img = data[p, q, :, :, :]
 
-        [h, w, c] = Img.shape
+            input = transforms.ToTensor()(img)
+            input = input.unsqueeze(0)
+            input = input.cuda()
 
-        ISource = transforms.ToTensor()(Img)
-        ISource = ISource.unsqueeze(0)
+            with torch.no_grad():  # this can save much memory
+                torch.cuda.synchronize()
+                start = time.time()
+                out = model(input)
+                torch.cuda.synchronize()
+                end = time.time()
+                ave_time = ave_time + end - start
 
-        Out = torch.Tensor(ISource.size()).cuda()
-        # noisy image
-        ISource = ISource.cuda()
-        with torch.no_grad(): # this can save much memory
-            k = 1
-            n = int(w/k)
-            for i in range(k):
-                for j in range(k):
-                    input1 = ISource[:, :, i*n:n+i*n, j*n:n+j*n]
-                    #out1 = input1-model(ISource)
-                    out1 = model(input1)
-                    #out1 = torch.clamp(input1-model(input1), 0., 1.)
-                    #out1 = torch.clamp(model(input1), 0., 1.)
-                    Out[:, :, i*n:n+i*n, j*n:n+j*n] = out1
-            #Out = torch.clamp(INoisy-model(INoisy), 0., 1.)
-        ## if you are using older version of PyTorch, torch.no_grad() may not be supported
-        # ISource, INoisy = Variable(ISource.cuda(),volatile=True), Variable(INoisy.cuda(),volatile=True)
-        # Out = torch.clamp(INoisy-model(INoisy), 0., 1.)
-        Out = torch.clamp(Out, 0., 1.)*255
-        img = Out.squeeze(0).cpu().numpy()
-        img = img.astype('uint8')
-        img = np.transpose(img, (1, 2, 0))
+                out = torch.clamp(out, 0., 1.) * 255
+                out_img = out.squeeze(0).cpu().numpy()
+                out_img = out_img.astype('uint8')
+                out_img = np.transpose(out_img, (1, 2, 0))
 
-        show = np.concatenate((ori[0:256,0:256,:], img), 1)
-        #cv2.imshow('ori', show)
-        #cv2.imshow('result', img)
-        #cv2.waitKey()
+                cnt = cnt + 1
+                # print(cnt)
 
-        cv2.imwrite('data/testing/' + str(cnt) + '_full' + '.png', show)
-        cnt = cnt+1
+                data[p, q, :, :, :] = out_img
 
-        psnr = compare_psnr(img, gt[0:256,0:256,:], 255)
-        print('psnr: %f', psnr)
+            print('cnt : %d', p*32+q)
 
-        # psnr = batch_PSNR(Out, ISource, 1.)
-        # psnr_test += psnr
-        # print("%s PSNR %f" % (f, psnr))
+    model_dir = os.path.join('data', 'Resultstest')
+    print('create checkpoint directory %s...' % model_dir)
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+
+    mat_file['BenchmarkNoisyBlocksSrgb'] = data
+    scio.savemat(os.path.join(model_dir, 'Resultstest.mat'), {'results': data})
+
+    ave_time = ave_time / (1280)
+    ave_time = ave_time * (1000/256) * (1000/256)
+    print('average time : %4f', ave_time)
 
 if __name__ == "__main__":
     main()
